@@ -48,13 +48,12 @@
         </div>
       </div>
 
-      <div id="result" class="result" style="display:none"></div>
-    </div>
-    <p class="small" style="margin-top:10px">
-      This is a simple demo. The backend uses keyword heuristics you can later replace with a real model (e.g., scikit-learn, spaCy, or a hosted LLM).
+      <div id="result" class="result" style="display:none"></div>␊
+    </div>␊
+    <p class="small" style="margin-top:10px">␊
     </p>
   </div>
-
+␊
   <script>
     async function triageTicket() {
       const btn = document.getElementById('submitBtn');
@@ -75,15 +74,30 @@
         const data = await res.json();
 
         const priMap = {1:'P1 (Critical)',2:'P2 (High)',3:'P3 (Normal)',4:'P4 (Low)'};
+        const categoryConfidence = Math.round((data.category_confidence || 0) * 100);
+        const urgencySignals = (data.urgency_signals || []).map(s => `<li>${s}</li>`).join('');
+        const categorySignals = (data.category_signals || []).map(s => `<li>${s}</li>`).join('');
+
         document.getElementById('result').style.display = 'block';
         document.getElementById('result').innerHTML = `
           <div class="pill">Category: <b>${data.category}</b></div>
+          <div class="pill">Confidence: <b>${categoryConfidence || 0}%</b></div>
+          <div class="pill">Inferred urgency: <b>${data.inferred_urgency}</b></div>
           <div class="pill">Priority: <b>${priMap[data.priority] || data.priority}</b></div>
           <div class="pill">Queue: <b>${data.routing_queue}</b></div>
           <div class="pill">SLA: <b>${data.suggested_sla_hours} hrs</b></div>
-          <div style="margin-top:10px">
+          <div style="margin-top:12px">
             <div class="small">Auto-resolve candidate: <b>${data.auto_resolve_candidate ? 'Yes' : 'No'}</b></div>
             <div class="small">KB: <a href="${data.kb_link}" target="_blank" rel="noopener">Open article</a></div>
+            <div class="small">Priority rationale: ${data.priority_rationale}</div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="small">Category signals:</div>
+            <ul>${categorySignals || '<li>No strong keyword hits detected</li>'}</ul>
+          </div>
+          <div style="margin-top:14px">
+            <div class="small">Urgency signals (score ${data.urgency_score}):</div>
+            <ul>${urgencySignals || '<li>No urgency signals detected</li>'}</ul>
           </div>
           <div style="margin-top:14px">
             <div class="small">Next best actions:</div>
