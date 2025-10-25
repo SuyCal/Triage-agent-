@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AI Ticket Triage (Demo)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b1020; --card:#141a2e; --ink:#e7ecff; --muted:#9db0ff; --accent:#7aa2ff; }
+    body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:900px; margin:40px auto; padding:0 16px; }
+    .title { font-size:1.6rem; font-weight:700; margin-bottom:16px; }
+    .card { background:var(--card); border-radius:16px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,.25); }
+    label { display:block; font-size:.9rem; color:var(--muted); margin:12px 0 6px; }
+    input, textarea, select { width:100%; background:#0e1430; color:var(--ink); border:1px solid #273056; border-radius:10px; padding:10px 12px; outline:none; }
+    textarea { min-height:110px; resize:vertical; }
+    .row { display:grid; grid-template-columns:1fr 160px; gap:12px; }
+    .btn { background:var(--accent); color:#081023; border:0; border-radius:10px; padding:12px 16px; font-weight:700; cursor:pointer; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .result { margin-top:18px; padding:16px; border-radius:12px; background:#0f1736; border:1px solid #273056; }
+    .pill { display:inline-block; padding:4px 10px; border-radius:999px; background:#22306b; margin-right:6px; font-size:.8rem; }
+    .small { color:var(--muted); font-size:.85rem; }
+    .grid { display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; }
+    a { color:var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">AI Ticket Triage (Demo)</div>
+    <div class="card">
+      <label>Title</label>
+      <input id="title" placeholder="e.g., Can't login to my account after enabling MFA" />
+
+      <label>Description</label>
+      <textarea id="desc" placeholder="Add details, steps to reproduce, error messages, timestamps, regions..."></textarea>
+
+      <div class="row">
+        <div>
+          <label>Urgency</label>
+          <select id="urgency">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High / P1</option>
+          </select>
+        </div>
+        <div style="align-self:end; text-align:right">
+          <button class="btn" id="submitBtn">Run Triage</button>
+        </div>
+      </div>
+
+      <div id="result" class="result" style="display:none"></div>
+    </div>
+    <p class="small" style="margin-top:10px">
+      This is a simple demo. The backend uses keyword heuristics you can later replace with a real model (e.g., scikit-learn, spaCy, or a hosted LLM).
+    </p>
+  </div>
+
+  <script>
+    async function triageTicket() {
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true; btn.textContent = 'Triaging...';
+
+      const payload = {
+        title: document.getElementById('title').value,
+        description: document.getElementById('desc').value,
+        urgency: document.getElementById('urgency').value
+      };
+
+      try {
+        const res = await fetch('http://localhost:5000/triage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        const priMap = {1:'P1 (Critical)',2:'P2 (High)',3:'P3 (Normal)',4:'P4 (Low)'};
+        document.getElementById('result').style.display = 'block';
+        document.getElementById('result').innerHTML = `
+          <div class="pill">Category: <b>${data.category}</b></div>
+          <div class="pill">Priority: <b>${priMap[data.priority] || data.priority}</b></div>
+          <div class="pill">Queue: <b>${data.routing_queue}</b></div>
+          <div class="pill">SLA: <b>${data.suggested_sla_hours} hrs</b></div>
+          <div style="margin-top:10px">
+            <div class="small">Auto-resolve candidate: <b>${data.auto_resolve_candidate ? 'Yes' : 'No'}</b></div>
+            <div class="small">KB: <a href="${data.kb_link}" target="_blank" rel="noopener">Open article</a></div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="small">Next best actions:</div>
+            <ul>${data.suggestions.map(s => `<li>${s}</li>`).join('')}</ul>
+          </div>
+          <div class="small">Triage time: ${new Date(data.received_at).toLocaleString()}</div>
+        `;
+      } catch (err) {
+        document.getElementById('result').style.display = 'block';
+        document.getElementById('result').innerHTML = `<b>Oops:</b> ${err.message}`;
+      } finally {
+        btn.disabled = false; btn.textContent = 'Run Triage';
+      }
+    }
+
+    document.getElementById('submitBtn').addEventListener('click', triageTicket);
+  </script>
+</body>
+</html>
