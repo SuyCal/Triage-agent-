@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List, Tuple
@@ -252,8 +252,8 @@ def analyze_category(text: str) -> Dict[str, object]:
     }
 
 
-def infer_urgency(text: str, category: str, user_urgency: str) -> Dict[str, object]:
-    """Infer urgency level from free text, category, and provided urgency."""
+def infer_urgency(text: str, category: str) -> Dict[str, object]:
+    """Infer urgency level automatically from free text and category."""
 
     normalized = _normalize(text)
     score = 0
@@ -279,14 +279,7 @@ def infer_urgency(text: str, category: str, user_urgency: str) -> Dict[str, obje
         score += 2
         signals.append("Multiple exclamation marks detected")
 
-    # Provided urgency acts as a hint, not the final truth
-    mapped_user = (user_urgency or "").lower()
-    if mapped_user in {"high", "urgent", "p1"}:
-        score += 3
-        signals.append("Requester marked as high urgency")
-    elif mapped_user in {"medium", "normal"}:
-        score += 1
-        signals.append("Requester marked as medium urgency")
+    # User-provided urgency is ignored; auto-infer only
 
     # Determine label from score thresholds
     if score >= 11:
@@ -363,18 +356,31 @@ def kb_links(category: str):
     }.get(category, base + "search")
 
 
+@app.after_request
+def add_cors_headers(resp):
+    resp.headers.setdefault("Access-Control-Allow-Origin", "*")
+    resp.headers.setdefault("Access-Control-Allow-Headers", "Content-Type")
+    return resp
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return send_from_directory(".", "index.html")
+
+
 @app.route("/triage", methods=["POST"])
 def triage():
     data = request.get_json(force=True)
     title = (data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
-    urgency = (data.get("urgency") or "low").strip()
+    # Ignore any caller-provided urgency; auto-infer only
+    urgency = ""
 
     text = f"{title}\n{description}"
 
     category_details = analyze_category(text)
     category = category_details["category"]
-    urgency_details = infer_urgency(text, category, urgency)
+    urgency_details = infer_urgency(text, category)
     priority, rationale = compute_priority(
         category, urgency_details["label"], urgency, text
     )
