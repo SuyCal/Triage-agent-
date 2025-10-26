@@ -4,12 +4,118 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 import re
 from flask_cors import CORS  # <-- add
+import sqlite3
+import threading
+import random
+import string
 
 app = Flask(__name__)
 CORS(app)  # <-- allow requests from your frontend (dev-friendly)
 
 
 app = Flask(__name__)
+
+# --- SQLite setup ---
+DB_PATH = "tickets.db"
+_db_lock = threading.Lock()
+
+
+def init_db():
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    ticket_ref TEXT UNIQUE,
+                    user_category TEXT,
+                    category TEXT NOT NULL,
+                    category_confidence REAL,
+                    inferred_urgency TEXT,
+                    urgency_score INTEGER,
+                    priority INTEGER,
+                    priority_rationale TEXT,
+                    routing_queue TEXT,
+                    suggested_sla_hours INTEGER,
+                    auto_resolve_candidate INTEGER,
+                    kb_link TEXT,
+                    status TEXT DEFAULT 'open',
+                    assigned_to TEXT
+                )
+                """
+            )
+            conn.commit()
+            # Migration: ensure ticket_ref column exists for existing DBs
+            # Migration for existing DBs: add column, then unique index
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tickets)").fetchall()}
+            if "ticket_ref" not in cols:
+                # 1) Add column without UNIQUE (SQLite limitation)
+                conn.execute("ALTER TABLE tickets ADD COLUMN ticket_ref TEXT")
+                # 2) Create UNIQUE index (enforces uniqueness for non-null values)
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_ticket_ref ON tickets(ticket_ref)")
+                # 3) Optional: backfill refs for existing rows
+                rows = conn.execute("SELECT id, category FROM tickets WHERE ticket_ref IS NULL").fetchall()
+                for tid, cat in rows:
+                    ref = generate_ticket_ref(cat or "other")
+                    # ensure uniqueness
+                    while conn.execute("SELECT 1 FROM tickets WHERE ticket_ref = ?", (ref,)).fetchone():
+                        ref = generate_ticket_ref(cat or "other")
+                    conn.execute("UPDATE tickets SET ticket_ref = ? WHERE id = ?", (ref, tid))
+                conn.commit()
+        finally:
+            conn.close()
+
+
+
+def db_execute(query: str, params: Tuple = ()):  # type: ignore[valid-type]
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.execute(query, params)
+            conn.commit()
+            return cur
+        finally:
+            conn.close()
+
+
+def db_query(query: str, params: Tuple = ()):  # type: ignore[valid-type]
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.execute(query, params)
+            rows = cur.fetchall()
+            return rows
+        finally:
+            conn.close()
+
+
+def _category_abbrev(category: str) -> str:
+    m = {
+        "billing": "Bil",
+        "outage": "Out",
+        "security": "Sec",
+        "account": "Acc",
+        "usage": "Use",
+        "performance": "Per",
+        "other": "Oth",
+    }
+    return m.get((category or "").lower(), "Oth")
+
+
+def _random_code(n: int = 4) -> str:
+    alphabet = string.ascii_uppercase
+    return "".join(random.choice(alphabet) for _ in range(n))
+
+
+def generate_ticket_ref(category: str) -> str:
+    prefix = _category_abbrev(category)
+    return f"{prefix}-{_random_code(4)}"
+
 
 # --- Lightweight heuristics "AI" engine ---
 # These keyword maps act as a deterministic fallback until you swap in a model.
@@ -360,6 +466,7 @@ def kb_links(category: str):
 def add_cors_headers(resp):
     resp.headers.setdefault("Access-Control-Allow-Origin", "*")
     resp.headers.setdefault("Access-Control-Allow-Headers", "Content-Type")
+    resp.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
     return resp
 
 
@@ -367,6 +474,149 @@ def add_cors_headers(resp):
 def index():
     return send_from_directory(".", "index.html")
 
+
+@app.route("/support", methods=["GET"])
+def support_ui():
+    return send_from_directory(".", "support.html")
+
+
+@app.route("/tickets", methods=["POST"])
+def create_ticket():
+    data = request.get_json(force=True)
+    title = (data.get("title") or "").strip()
+    description = (data.get("description") or "").strip()
+    user_category = (data.get("user_category") or "").strip().lower()
+
+    if not title or not description:
+        return jsonify({"error": "title and description are required"}), 400
+
+    text = f"{title}\n{description}"
+
+    category_details = analyze_category(text)
+    category = category_details["category"]
+    urgency_details = infer_urgency(text, category)
+    priority, rationale = compute_priority(
+        category, urgency_details["label"], "", text
+    )
+    sla_hours = suggest_sla_hours(priority)
+    auto_resolve = can_auto_resolve(category, text)
+    route = ROUTING.get(category, "Support-L1")
+
+    created_at = datetime.utcnow().isoformat() + "Z"
+    # Generate unique ticket_ref
+    ticket_ref = generate_ticket_ref(category)
+    for _ in range(10):
+        exists = db_query("SELECT 1 FROM tickets WHERE ticket_ref = ?", (ticket_ref,))
+        if not exists:
+            break
+        ticket_ref = generate_ticket_ref(category)
+    cur = db_execute(
+        """
+        INSERT INTO tickets (
+            created_at, title, description, ticket_ref, user_category,
+            category, category_confidence, inferred_urgency, urgency_score,
+            priority, priority_rationale, routing_queue, suggested_sla_hours,
+            auto_resolve_candidate, kb_link, status, assigned_to
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL)
+        """,
+        (
+            created_at,
+            title,
+            description,
+            ticket_ref,
+            user_category or None,
+            category,
+            category_details["confidence"],
+            urgency_details["label"],
+            int(urgency_details["score"]),
+            int(priority),
+            rationale,
+            route,
+            int(sla_hours),
+            1 if auto_resolve else 0,
+            kb_links(category),
+        ),
+    )
+    ticket_id = cur.lastrowid if cur else None
+
+    resp = {
+        "id": ticket_id,
+        "ticket_ref": ticket_ref,
+        "received_at": created_at,
+        "title": title,
+        "description": description,
+        "user_category": user_category or None,
+        "category": category,
+        "category_confidence": category_details["confidence"],
+        "category_signals": category_details["matched_keywords"],
+        "priority": priority,  # 1=highest, 4=lowest
+        "inferred_urgency": urgency_details["label"],
+        "urgency_score": urgency_details["score"],
+        "urgency_signals": urgency_details["signals"],
+        "routing_queue": route,
+        "suggested_sla_hours": sla_hours,
+        "auto_resolve_candidate": auto_resolve,
+        "suggestions": SUGGESTIONS.get(category, SUGGESTIONS["other"]),
+        "kb_link": kb_links(category),
+        "priority_rationale": rationale,
+        "status": "open",
+    }
+    return jsonify(resp), 201
+
+
+@app.route("/tickets", methods=["GET"])
+def list_tickets():
+    rows = db_query("SELECT * FROM tickets ORDER BY datetime(created_at) DESC")
+    items = []
+    for r in rows:
+        obj = {k: r[k] for k in r.keys()}
+        obj["auto_resolve_candidate"] = bool(obj.get("auto_resolve_candidate"))
+        items.append(obj)
+    return jsonify({"items": items}), 200
+
+
+@app.route("/tickets/<int:ticket_id>", methods=["PATCH", "PUT", "POST"])
+def update_ticket(ticket_id: int):
+    data = request.get_json(force=True, silent=True) or {}
+    status = data.get("status")
+    assigned_to = data.get("assigned_to")
+    updates = []
+    params: List = []
+    if status:
+        updates.append("status = ?")
+        params.append(status)
+    if assigned_to is not None:
+        updates.append("assigned_to = ?")
+        params.append(assigned_to)
+    if not updates:
+        return jsonify({"error": "no valid fields to update"}), 400
+    params.append(ticket_id)
+    db_execute(f"UPDATE tickets SET {', '.join(updates)} WHERE id = ?", tuple(params))
+    row = db_query("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+    if not row:
+        return jsonify({"error": "ticket not found"}), 404
+    obj = {k: row[0][k] for k in row[0].keys()}
+    obj["auto_resolve_candidate"] = bool(obj.get("auto_resolve_candidate"))
+    return jsonify(obj), 200
+
+
+@app.route("/tickets/<int:ticket_id>", methods=["GET"])
+def get_ticket(ticket_id: int):
+    row = db_query("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+    if not row:
+        return jsonify({"error": "ticket not found"}), 404
+    obj = {k: row[0][k] for k in row[0].keys()}
+    obj["auto_resolve_candidate"] = bool(obj.get("auto_resolve_candidate"))
+    return jsonify(obj), 200
+
+
+@app.route("/tickets/<int:ticket_id>", methods=["DELETE"])
+def delete_ticket(ticket_id: int):
+    row = db_query("SELECT id FROM tickets WHERE id = ?", (ticket_id,))
+    if not row:
+        return jsonify({"error": "ticket not found"}), 404
+    db_execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+    return "", 204
 
 @app.route("/triage", methods=["POST"])
 def triage():
@@ -414,4 +664,5 @@ def health():
 
 if __name__ == "__main__":
     # For local dev; use a proper WSGI server in production
+    init_db()
     app.run(host="0.0.0.0", port=5000, debug=True)

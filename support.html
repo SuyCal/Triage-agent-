@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Cloudcore - Support Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b1020; --card:#141a2e; --ink:#e7ecff; --muted:#9db0ff; --accent:#7aa2ff; --ok:#74c69d; }
+    body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:1100px; margin:32px auto; padding:0 16px; }
+    .title { font-size:1.6rem; font-weight:700; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; }
+    .card { background:var(--card); border-radius:16px; padding:16px; box-shadow:0 8px 30px rgba(0,0,0,.25); }
+    .controls { display:flex; gap:10px; align-items:center; margin-bottom:10px; }
+    select, input { background:#0e1430; color:var(--ink); border:1px solid #273056; border-radius:10px; padding:8px 10px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:10px; border-bottom:1px solid #273056; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#22306b; margin-right:6px; font-size:.76rem; }
+    .p1 { background:#a11; color:#fff; }
+    .p2 { background:#b35b00; color:#fff; }
+    .p3 { background:#164; color:#fff; }
+    .p4 { background:#22306b; }
+    .btn { background:var(--accent); color:#081023; border:0; border-radius:10px; padding:8px 12px; font-weight:700; cursor:pointer; }
+    .small { color:var(--muted); font-size:.85rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">
+      <span>Support Dashboard</span>
+      <a href="/" style="color:var(--accent); text-decoration:none">Submit New Ticket</a>
+    </div>
+    <div class="card">
+      <div class="controls">
+        <label class="small">Filter:</label>
+        <select id="statusFilter">
+          <option value="">All</option>
+          <option value="open">Open</option>
+          <option value="in_progress">In Progress</option>
+          <option value="resolved">Resolved</option>
+        </select>
+        <input id="assigneeFilter" placeholder="Assignee contains..." />
+        <button class="btn" id="refreshBtn">Refresh</button>
+      </div>
+      <div style="overflow:auto">
+        <table id="ticketsTable">
+          <thead>
+            <tr>
+              <th>Ref</th>
+              <th>Created</th>
+              <th>Title</th>
+              <th>Category</th>
+              <th>Urgency</th>
+              <th>Priority</th>
+              <th>Status</th>
+              <th>Assignee</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Details Modal -->
+  <div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);">
+    <div style="max-width:800px; margin:60px auto; background:var(--card); color:var(--ink); border-radius:14px; padding:16px; border:1px solid #273056;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-weight:700;">Ticket Details</div>
+        <button class="btn" id="modalCloseBtn" style="background:#273056; color:var(--ink)">Close</button>
+      </div>
+      <div id="modalBody" class="small"></div>
+    </div>
+  </div>
+
+  <script>
+    const priMapText = {1:'P1 (Critical)',2:'P2 (High)',3:'P3 (Normal)',4:'P4 (Low)'};
+    const priClass = {1:'p1',2:'p2',3:'p3',4:'p4'};
+
+    async function fetchTickets() {
+      const res = await fetch('/tickets');
+      if (!res.ok) throw new Error('Failed to load tickets');
+      const data = await res.json();
+      return data.items || [];
+    }
+
+    async function renderTickets() {
+      const statusFilter = document.getElementById('statusFilter').value;
+      const assigneeFilter = document.getElementById('assigneeFilter').value.toLowerCase();
+      const tbody = document.querySelector('#ticketsTable tbody');
+      tbody.innerHTML = '<tr><td colspan="9" class="small">Loading...</td></tr>';
+      try {
+        let items = await fetchTickets();
+        if (statusFilter) items = items.filter(t => (t.status || '') === statusFilter);
+        if (assigneeFilter) items = items.filter(t => (t.assigned_to || '').toLowerCase().includes(assigneeFilter));
+        if (items.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="9" class="small">No tickets found</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(t => {
+          const created = new Date(t.created_at).toLocaleString();
+          const pri = t.priority;
+          const priTxt = priMapText[pri] || pri;
+          return `
+            <tr>
+              <td>${escapeHtml(t.ticket_ref || ('#' + t.id))}</td>
+              <td>${created}</td>
+              <td>
+                <div>${escapeHtml(t.title || '')}</div>
+                <div class="small">${escapeHtml((t.description || '').slice(0, 120))}${(t.description||'').length>120?'...':''}</div>
+                <div class="small">Route: ${t.routing_queue} | SLA: ${t.suggested_sla_hours}h</div>
+              </td>
+              <td>
+                <div class="pill">Auto: <b>${t.category}</b></div>
+                <div class="small">User: ${t.user_category || '-'}</div>
+              </td>
+              <td>
+                <div class="pill">${t.inferred_urgency}</div>
+                <div class="small">Score ${t.urgency_score}</div>
+              </td>
+              <td><span class="pill ${priClass[pri] || ''}">${priTxt}</span></td>
+              <td>${t.status || 'open'}</td>
+              <td>${t.assigned_to || '-'}</td>
+              <td>
+                <button class="btn" onclick="viewTicket(${t.id})">View</button>
+                <button class="btn" onclick="updateStatus(${t.id}, 'in_progress')" style="margin-left:6px;">Start</button>
+                <button class="btn" onclick="updateStatus(${t.id}, 'resolved')" style="margin-left:6px;background:var(--ok)">Resolve</button>
+                <button class="btn" onclick="confirmDelete(${t.id})" style="margin-left:6px;background:#a11;color:#fff">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="9"><b>Error:</b> ${e.message}</td></tr>`;
+      }
+    }
+
+    async function updateStatus(id, status) {
+      try {
+        const res = await fetch(`/tickets/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+        if (!res.ok) throw new Error('Failed to update');
+        await renderTickets();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+
+    async function viewTicket(id) {
+      try {
+        const res = await fetch(`/tickets/${id}`);
+        if (!res.ok) throw new Error('Failed to load ticket');
+        const t = await res.json();
+        const pri = t.priority;
+        const priTxt = priMapText[pri] || pri;
+        const created = new Date(t.created_at).toLocaleString();
+        const signalsUrg = (t.urgency_signals || []).map(s => `<li>${escapeHtml(s)}</li>`).join('') || '<li>None</li>';
+        const modalBody = document.getElementById('modalBody');
+        modalBody.innerHTML = `
+          <div style="margin-bottom:8px;">
+            <span class="pill ${priClass[pri]||''}">${priTxt}</span>
+            <span class="pill">${escapeHtml(t.category)}</span>
+            <span class="pill">Urgency: ${escapeHtml(t.inferred_urgency || '')}</span>
+          </div>
+          <div><b>Created:</b> ${created}</div>
+          <div><b>Status:</b> ${escapeHtml(t.status || 'open')}</div>
+          <div><b>Assignee:</b> ${escapeHtml(t.assigned_to || '-')}</div>
+          <div style="margin-top:10px"><b>Title</b><br/>${escapeHtml(t.title || '')}</div>
+          <div style="margin-top:10px"><b>Description</b><br/>${escapeHtml(t.description || '')}</div>
+          <div style="margin-top:10px"><b>Routing Queue:</b> ${escapeHtml(t.routing_queue || '')}</div>
+          <div><b>SLA (hrs):</b> ${t.suggested_sla_hours}</div>
+          <div style="margin-top:10px"><b>Priority rationale</b><br/>${escapeHtml(t.priority_rationale || '')}</div>
+          <div style="margin-top:10px"><b>Urgency signals</b><ul>${signalsUrg}</ul></div>
+          <div style="margin-top:10px"><b>KB Link:</b> ${t.kb_link ? `<a href="${t.kb_link}" target="_blank" rel="noopener" style="color:var(--accent)">${t.kb_link}</a>` : '-'}</div>
+        `;
+        document.getElementById('modal').style.display = 'block';
+      } catch (e) {
+        alert('Failed to load ticket: ' + e.message);
+      }
+    }
+
+    async function confirmDelete(id) {
+      if (!confirm(`Delete ticket #${id}? This cannot be undone.`)) return;
+      try {
+        const res = await fetch(`/tickets/${id}`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+        await renderTickets();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    document.getElementById('modalCloseBtn')?.addEventListener('click', () => {
+      document.getElementById('modal').style.display = 'none';
+      document.getElementById('modalBody').innerHTML = '';
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', renderTickets);
+    document.getElementById('statusFilter').addEventListener('change', renderTickets);
+    document.getElementById('assigneeFilter').addEventListener('input', () => {
+      clearTimeout(window.__assigneeTimer);
+      window.__assigneeTimer = setTimeout(renderTickets, 250);
+    });
+    renderTickets();
+  </script>
+</body>
+</html>

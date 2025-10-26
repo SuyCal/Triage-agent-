@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>AI Ticket Triage (Demo)</title>
+  <title>CloudCore Support - Submit Support Request</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root { --bg:#0b1020; --card:#141a2e; --ink:#e7ecff; --muted:#9db0ff; --accent:#7aa2ff; }
@@ -26,7 +26,7 @@
 </head>
 <body>
   <div class="wrap">
-    <div class="title">AI Ticket Triage (Demo)</div>
+    <div class="title">Submit Support Request</div>
     <div class="card">
       <label>Title</label>
       <input id="title" placeholder="e.g., Can't login to my account after enabling MFA" />
@@ -34,28 +34,41 @@
       <label>Description</label>
       <textarea id="desc" placeholder="Add details, steps to reproduce, error messages, timestamps, regions..."></textarea>
 
+      <label>Your Category (optional)</label>
+      <select id="user_category">
+        <option value="">Select a category...</option>
+        <option value="billing">Billing</option>
+        <option value="outage">Outage</option>
+        <option value="security">Security</option>
+        <option value="account">Account</option>
+        <option value="usage">Usage</option>
+        <option value="performance">Performance</option>
+        <option value="other">Other</option>
+      </select>
+
       <div style="margin-top:12px; text-align:right">
-        <button class="btn" id="submitBtn">Run Triage</button>
+        <button class="btn" id="submitBtn">Submit Request</button>
       </div>
 
       <div id="result" class="result" style="display:none"></div>
     </div>
     <p class="small" style="margin-top:10px">
-      This is a simple demo. The backend now blends richer keyword heuristics for auto-classification and urgency scoring that you can later replace with a trained model (e.g., scikit-learn, spaCy, or a hosted LLM).
+      Your request will be submitted to our support team. You will receive a reference ID after submission.
     </p>
   </div>
 
   <script>
     async function triageTicket() {
       const btn = document.getElementById('submitBtn');
-      btn.disabled = true; btn.textContent = 'Triaging...';
+      btn.disabled = true; btn.textContent = 'Submitting...';
 
       const payload = {
         title: document.getElementById('title').value,
-        description: document.getElementById('desc').value
+        description: document.getElementById('desc').value,
+        user_category: document.getElementById('user_category').value
       };
 
-      const endpoint = '/triage';
+      const endpoint = '/tickets';
 
       try {
         const res = await fetch(endpoint, {
@@ -67,46 +80,24 @@
           const errorText = await res.text();
           throw new Error(`Server responded with ${res.status}: ${errorText || res.statusText}`);
         }
-        const data = await res.json();
-
-        const priMap = {1:'P1 (Critical)',2:'P2 (High)',3:'P3 (Normal)',4:'P4 (Low)'};
-        const categoryConfidence = Math.round((data.category_confidence || 0) * 100);
-        const urgencySignals = (data.urgency_signals || []).map(s => `<li>${s}</li>`).join('');
-        const categorySignals = (data.category_signals || []).map(s => `<li>${s}</li>`).join('');
-
+        const data = await res.json();\n        const ref = data.ticket_ref || ("#" + data.id);
         document.getElementById('result').style.display = 'block';
         document.getElementById('result').innerHTML = `
-          <div class="pill">Category: <b>${data.category}</b></div>
-          <div class="pill">Confidence: <b>${categoryConfidence || 0}%</b></div>
-          <div class="pill">Inferred urgency: <b>${data.inferred_urgency}</b></div>
-          <div class="pill">Priority: <b>${priMap[data.priority] || data.priority}</b></div>
-          <div class="pill">Queue: <b>${data.routing_queue}</b></div>
-          <div class="pill">SLA: <b>${data.suggested_sla_hours} hrs</b></div>
-          <div style="margin-top:12px">
-            <div class="small">Auto-resolve candidate: <b>${data.auto_resolve_candidate ? 'Yes' : 'No'}</b></div>
-            <div class="small">KB: <a href="${data.kb_link}" target="_blank" rel="noopener">Open article</a></div>
-            <div class="small">Priority rationale: ${data.priority_rationale}</div>
-          </div>
-          <div style="margin-top:14px">
-            <div class="small">Category signals:</div>
-            <ul>${categorySignals || '<li>No strong keyword hits detected</li>'}</ul>
-          </div>
-          <div style="margin-top:14px">
-            <div class="small">Urgency signals (score ${data.urgency_score}):</div>
-            <ul>${urgencySignals || '<li>No urgency signals detected</li>'}</ul>
-          </div>
-          <div style="margin-top:14px">
-            <div class="small">Next best actions:</div>
-            <ul>${data.suggestions.map(s => `<li>${s}</li>`).join('')}</ul>
-          </div>
-          <div class="small">Triage time: ${new Date(data.received_at).toLocaleString()}</div>
+          <div class="pill">Submitted</div>
+          <div class="small">Your request has been received.</div>
+          <div class="small">Reference ID: <b>${ref}</b></div>
+          <div class="small">Submitted at: ${new Date(data.received_at).toLocaleString()}</div>
         `;
+        // Optional: clear inputs
+        document.getElementById('title').value = '';
+        document.getElementById('desc').value = '';
+        document.getElementById('user_category').value = '';
       } catch (err) {
-        const hint = `Ensure the Flask server is running (python app.py) and reachable at ${endpoint}`;
+        const hint = `We could not submit your request. Please try again later or contact support.`;
         document.getElementById('result').style.display = 'block';
         document.getElementById('result').innerHTML = `<b>Oops:</b> ${err.message}<br/><span class="small">${hint}</span>`;
       } finally {
-        btn.disabled = false; btn.textContent = 'Run Triage';
+        btn.disabled = false; btn.textContent = 'Submit Request';
       }
     }
 
@@ -114,4 +105,3 @@
   </script>
 </body>
 </html>
-
